@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Crossy Road</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: white;
+            font-size: 48px; font-weight: bold; text-shadow: 2px 2px 0px #000;
+            pointer-events: none; z-index: 10;
+        }
+        #instructions {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            color: white; background: rgba(0,0,0,0.5); padding: 10px 20px;
+            border-radius: 20px; font-size: 18px; text-align: center;
+        }
+        #game-over {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8); color: white; padding: 40px;
+            border-radius: 20px; text-align: center; display: none; z-index: 20;
+        }
+        button {
+            padding: 10px 20px; font-size: 20px; cursor: pointer;
+            background: #ffcc00; border: none; border-radius: 5px; font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">0</div>
+    <div id="instructions">Use Arrow Keys or WASD to Move</div>
+    <div id="game-over">
+        <h1>GAME OVER!</h1>
+        <p id="final-score"></p>
+        <button onclick="location.reload()">Play Again</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build three.module.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+        // Game Constants
+        const GRID_SIZE = 1;
+        const LANE_WIDTH = 1;
+        const WORLD_WIDTH = 11;
+        const CAR_SPEEDS = [0.05, 0.08, 0.12];
+        const COLORS = {
+            grass: 0x7cfc00,
+            road: 0x444444,
+            player: 0xdfdfdf,
+            car: [0xff0000, 0x0000ff, 0xffff00, 0x00ff00, 0xff00ff]
+        };
+
+        // Game State
+        let score = 0;
+        let gameOver = false;
+        let playerPos = { x: 0, z: 0 };
+        const lanes = []; // Stores lane data
+
+        // Three.js Setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 10, 10);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(5, 10, 5);
+        light.castShadow = true;
+        light.shadow.mapSize.width = 1024;
+        light.shadow.mapSize.height = 1024;
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0xffeeff, 0.6));
+
+        // Player Object
+        const playerGroup = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshStandardMaterial({ color: COLORS.player }));
+        body.position.y = 0.3;
+        body.castShadow = true;
+        playerGroup.add(body);
+        
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.4), new THREE.MeshStandardMaterial({ color: 0xdddddd }));
+        head.position.y = 0.7;
+        head.castShadow = true;
+        playerGroup.add(head);
+
+        scene.add(playerGroup);
+
+        function createLane(index) {
+            const isRoad = index !== 0 && Math.random() > 0.4;
+            const laneGroup = new THREE.Group();
+            
+            // Floor
+            const geo = new THREE.BoxGeometry(WORLD_WIDTH, 0.2, 1);
+            const mat = new THREE.MeshStandardMaterial({ color: isRoad ? COLORS.road : COLORS.grass });
+            const floor = new THREE.Mesh(geo, mat);
+            floor.receiveShadow = true;
+            laneGroup.add(floor);
+
+            const laneData = {
+                isRoad: isRoad,
+                cars: [],
+                direction: Math.random() > 0.5 ? 1 : -1,
+                speed: isRoad ? CAR_SPEEDS[Math.floor(Math.random() * CAR_SPEEDS.length)] : 0,
+                mesh: laneGroup
+            };
+
+            if (isRoad) {
+                // Create cars for this lane
+                const carCount = 2 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < carCount; i++) {
+                    const car = new THREE.Mesh(
+                        new THREE.BoxGeometry(1.2, 0.6, 0.6), 
+                        new THREE.MeshStandardMaterial({ color: COLORS.car[Math.floor(Math.random() * COLORS.car.length)] })
+                    );
+                    car.position.set((Math.random() - 0.5) * WORLD_WIDTH, 0.3, 0);
+                    car.castShadow = true;
+                    laneGroup.add(car);
+                    laneData.cars.push(car);
+                }
+            }
+
+            laneGroup.position.z = -index;
+            scene.add(laneGroup);
+            return laneData;
+        }
+
+        // Initial World Generation
+        for (let i = 0; i < 20; i++) {
+            lanes.push(createLane(i));
+        }
+
+        let jumpProgress = 0;
+        let isJumping = false;
+
+        function updatePlayerPosition() {
+            // We remove this function's logic and move it into the animate() loop
+            // to ensure smooth frame-by-frame updates.
+        }
+
+        function checkCollision() {
+            const playerBox = new THREE.Box3().setFromObject(body);
+            
+            // Only check lanes near the player
+            const currentLaneIdx = Math.round(-playerPos.z);
+            if (lanes[currentLaneIdx] && lanes[currentLaneIdx].isRoad) {
+                lanes[currentLaneIdx].cars.forEach(car => {
+                    const carBox = new THREE.Box3().setFromObject(car);
+                    if (playerBox.intersectsBox(carBox)) {
+                        gameOver = true;
+                        document.getElementById('game-over').style.display = 'block';
+                        document.getElementById('final-score').innerText = `You crossed ${score} lanes!`;
+                    }
+                });
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (gameOver) return;
+
+            switch(e.key.toLowerCase()) {
+                case 'arrowup': case 'w':
+                    playerPos.z -= 1;
+                    playerGroup.rotation.y = Math.PI;
+                    score = Math.max(score, Math.abs(Math.round(playerPos.z)));
+                    document.getElementById('ui').innerText = score;
+                    isJumping = true;
+                    break;
+                case 'arrowdown': case 's':
+                    playerPos.z += 1;
+                    playerGroup.rotation.y = 0;
+                    isJumping = true;
+                    break;
+                case 'arrowleft': case 'a':
+                    playerPos.x -= 1;
+                    playerGroup.rotation.y = -Math.PI / 2;
+                    isJumping = true;
+                    break;
+                case 'arrowright': case 'd':
+                    playerPos.x += 1;
+                    playerGroup.rotation.y = Math.PI / 2;
+                    isJumping = true;
+                    break;
+            }
+
+            // Boundaries
+            playerPos.x = Math.max(-5, Math.min(5, playerPos.x));
+            
+            // Procedural generation: add more lanes as player moves forward
+            if (Math.abs(playerPos.z) > lanes.length - 10) {
+                for(let i = 0; i < 10; i++) {
+                    lanes.push(createLane(lanes.length));
+                }
+            }
+            
+            updatePlayerPosition();
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (!gameOver) {
+                // 1. Smooth Subject Movement (Lerp)
+                playerGroup.position.x = THREE.MathUtils.lerp(playerGroup.position.x, playerPos.x, 0.2);
+                playerGroup.position.z = THREE.MathUtils.lerp(playerGroup.position.z, playerPos.z, 0.2);
+
+                // 2. Jump Animation
+                if (isJumping) {
+                    jumpProgress += 0.15;
+                    playerGroup.position.y = Math.sin(jumpProgress * Math.PI) * 0.4;
+                    if (jumpProgress >= 1) {
+                        isJumping = false;
+                        jumpProgress = 0;
+                        playerGroup.position.y = 0;
+                    }
+                }
+
+                // 3. FIXED Camera Offset (Prevents rotation feel)
+                // Camera stays at a constant relative distance from the player
+                camera.position.x = playerGroup.position.x;
+                camera.position.y = 10;
+                camera.position.z = playerGroup.position.z + 10;
+                camera.lookAt(playerGroup.position.x, 0, playerGroup.position.z - 5);
+
+                // 4. Move Cars
+                lanes.forEach(lane => {
+                    if (lane.isRoad) {
+                        lane.cars.forEach(car => {
+                            car.position.x += lane.speed * lane.direction;
+                            if (car.position.x > 6) car.position.x = -6;
+                            if (car.position.x < -6) car.position.x = 6;
+                        });
+                    }
+                });
+
+                checkCollision();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        updatePlayerPosition();
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
