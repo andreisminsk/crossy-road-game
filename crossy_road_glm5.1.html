@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crossy Road</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #000; font-family: 'Segoe UI', Arial, sans-serif; }
+canvas { display: block; }
+#ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+#score { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 48px; font-weight: 900; text-shadow: 2px 2px 6px rgba(0,0,0,0.7), 0 0 20px rgba(0,0,0,0.5); z-index: 10; }
+#highscore { position: absolute; top: 72px; left: 50%; transform: translateX(-50%); color: #ffd700; font-size: 18px; font-weight: 700; text-shadow: 1px 1px 4px rgba(0,0,0,0.8); z-index: 10; }
+#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.55); pointer-events: all; z-index: 20; transition: opacity 0.3s; }
+#overlay.hidden { opacity: 0; pointer-events: none; }
+#overlay h1 { color: #fff; font-size: 64px; font-weight: 900; text-shadow: 3px 3px 0 #e74c3c, 6px 6px 0 rgba(0,0,0,0.3); margin-bottom: 10px; letter-spacing: -2px; }
+#overlay h2 { color: #ff6b6b; font-size: 28px; font-weight: 700; margin-bottom: 30px; }
+#overlay .subtitle { color: #ccc; font-size: 16px; margin-bottom: 8px; }
+#overlay .start-btn { background: #2ecc71; color: #fff; border: none; padding: 16px 48px; font-size: 24px; font-weight: 800; border-radius: 12px; cursor: pointer; pointer-events: all; box-shadow: 0 4px 0 #27ae60, 0 6px 20px rgba(0,0,0,0.4); transition: transform 0.1s, box-shadow 0.1s; margin-top: 10px; }
+#overlay .start-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 0 #27ae60, 0 8px 24px rgba(0,0,0,0.5); }
+#overlay .start-btn:active { transform: translateY(2px); box-shadow: 0 2px 0 #27ae60; }
+#controls-hint { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.5); font-size: 13px; text-align: center; z-index: 10; }
+#mobile-controls { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 15; pointer-events: all; display: none; }
+.ctrl-row { display: flex; justify-content: center; gap: 6px; margin-bottom: 6px; }
+.ctrl-btn { width: 64px; height: 64px; background: rgba(255,255,255,0.2); border: 2px solid rgba(255,255,255,0.4); border-radius: 14px; color: #fff; font-size: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; -webkit-user-select: none; backdrop-filter: blur(4px); }
+.ctrl-btn:active { background: rgba(255,255,255,0.4); }
+@media (pointer: coarse) { #mobile-controls { display: block; } }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="score">0</div>
+  <div id="highscore"></div>
+  <div id="overlay">
+    <h1>CROSSY ROAD</h1>
+    <h2>Dodge traffic, hop on logs, ride the rails!</h2>
+    <div class="subtitle">Arrow keys / WASD to move</div>
+    <div class="subtitle">Don't stay idle too long!</div>
+    <button class="start-btn" id="startBtn">▶ PLAY</button>
+  </div>
+  <div id="controls-hint">Arrow keys / WASD to move</div>
+  <div id="mobile-controls">
+    <div class="ctrl-row"><div class="ctrl-btn" data-dir="up">▲</div></div>
+    <div class="ctrl-row">
+      <div class="ctrl-btn" data-dir="left">◀</div>
+      <div class="ctrl-btn" data-dir="down">▼</div>
+      <div class="ctrl-btn" data-dir="right">▶</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ============ GAME CONFIG ============
+const LANE_WIDTH = 1;
+const LANE_DEPTH = 1;
+const MOVE_DISTANCE = 1;
+const HOP_DURATION = 120; // ms
+const IDLE_DEATH_TIME = 7000; // ms before eagle
+const CAR_COLORS = [0xe74c3c, 0x3498db, 0xf1c40f, 0x9b59b6, 0xe67e22, 0x1abc9c, 0xff6b81, 0x00d2d3];
+const LOG_COLOR = 0x8B5E3C;
+const WATER_COLOR = 0x2980b9;
+const GRASS_COLORS = [0x27ae60, 0x2ecc71, 0x26a65b, 0x33d17a];
+const RAIL_COLOR = 0x555555;
+const TRAIN_COLOR = 0xf39c12;
+const PLAYER_BODY = 0xf5f5dc;
+const PLAYER_HEAD = 0xffe0bd;
+
+// ============ THREE.JS SETUP ============
+let scene, camera, renderer;
+let player, playerGroup;
+let lanes = {};
+let laneRows = [];
+let furthestRow = 0;
+let maxRowGenerated = -1;
+let score = 0;
+let highScore = parseInt(localStorage.getItem('crossyHigh') || '0');
+let gameState = 'menu'; // menu, playing, dead
+let hopAnim = null;
+let idleTimer = 0;
+let lastMoveTime = 0;
+let eagle = null;
+let eagleApproaching = false;
+let cameraTarget = new THREE.Vector3(0, 0, 0);
+let cameraPos = new THREE.Vector3(0, 0, 0);
+
+// Player state
+let playerRow = 0;
+let playerCol = 0;
+let playerTargetRow = 0;
+let playerTargetCol = 0;
+let playerOnLog = null;
+let playerLogSpeed = 0;
+
+// Death
+let deathType = null;
+let deathTimer = 0;
+
+// ============ INIT ============
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87CEEB);
+  scene.fog = new THREE.Fog(0x87CEEB, 12, 28);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 8, -6);
+  camera.lookAt(0, 0, 2);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  // Lights
+  const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+  scene.add(ambient);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5, 15, 5);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.set(2048, 2048);
+  dirLight.shadow.camera.near = 0.5;
+  dirLight.shadow.camera.far = 50;
+  dirLight.shadow.camera.left = -20;
+  dirLight.shadow.camera.right = 20;
+  dirLight.shadow.camera.top = 20;
+  dirLight.shadow.camera.bottom = -20;
+  scene.add(dirLight);
+
+  const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x556B2F, 0.3);
+  scene.add(hemiLight);
+
+  // Create player
+  createPlayer();
+
+  // Generate initial lanes
+  generateLanes(-2, 20);
+
+  // Update high score display
+  updateHighScoreDisplay();
+
+  // Events
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('resize', onResize);
+  window.addEventListener('touchstart', onTouchStart, { passive: false });
+
+  // Mobile controls
+  document.querySelectorAll('.ctrl-btn').forEach(btn => {
+    btn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = btn.dataset.dir;
+      handleMove(dir);
+    });
+  });
+
+  document.getElementById('startBtn').addEventListener('click', startGame);
+
+  // Start loop
+  animate();
+}
+
+function createPlayer() {
+  playerGroup = new THREE.Group();
+
+  // Body
+  const bodyGeo = new THREE.BoxGeometry(0.55, 0.5, 0.55);
+  const bodyMat = new THREE.MeshLambertMaterial({ color: PLAYER_BODY });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 0.35;
+  body.castShadow = true;
+  playerGroup.add(body);
+
+  // Head
+  const headGeo = new THREE.BoxGeometry(0.45, 0.4, 0.45);
+  const headMat = new THREE.MeshLambertMaterial({ color: PLAYER_HEAD });
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.position.y = 0.75;
+  head.castShadow = true;
+  playerGroup.add(head);
+
+  // Eyes
+  const eyeGeo = new THREE.BoxGeometry(0.08, 0.1, 0.05);
+  const eyeMat = new THREE.MeshLambertMaterial({ color: 0x222222 });
+  const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+  leftEye.position.set(-0.12, 0.8, 0.23);
+  playerGroup.add(leftEye);
+  const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+  rightEye.position.set(0.12, 0.8, 0.23);
+  playerGroup.add(rightEye);
+
+  // Beak
+  const beakGeo = new THREE.BoxGeometry(0.15, 0.08, 0.15);
+  const beakMat = new THREE.MeshLambertMaterial({ color: 0xff6600 });
+  const beak = new THREE.Mesh(beakGeo, beakMat);
+  beak.position.set(0, 0.73, 0.28);
+  playerGroup.add(beak);
+
+  playerGroup.position.set(0, 0, 0);
+  scene.add(playerGroup);
+  player = playerGroup;
+}
+
+// ============ LANE GENERATION ============
+const LANE_TYPES = ['grass', 'road', 'river', 'rail'];
+
+function getLaneType(row) {
+  if (row <= 0) return 'grass';
+  // Seeded random for consistency
+  const seed = row * 7919 + 104729;
+  const rand = seededRandom(seed);
+
+  // Patterns: groups of same type
+  if (!lanes[row]) {
+    let type;
+    const r = rand;
+    if (r < 0.30) type = 'grass';
+    else if (r < 0.60) type = 'road';
+    else if (r < 0.82) type = 'river';
+    else type = 'rail';
+    return type;
+  }
+  return lanes[row].type;
+}
+
+function seededRandom(seed) {
+  let x = Math.sin(seed) * 10000;
+  return x - Math.floor(x);
+}
+
+function generateLanes(fromRow, toRow) {
+  for (let row = fromRow; row <= toRow; row++) {
+    if (lanes[row]) continue;
+
+    const seed = row * 7919 + 104729;
+    const rand = () => { let x = Math.sin(seed + laneSeed++) * 10000; return x - Math.floor(x); };
+    let laneSeed = 0;
+
+    let type;
+    if (row <= 0) {
+      type = 'grass';
+    } else {
+      const r = seededRandom(row * 7919 + 104729);
+      if (r < 0.28) type = 'grass';
+      else if (r < 0.58) type = 'road';
+      else if (r < 0.80) type = 'river';
+      else type = 'rail';
+    }
+
+    const laneData = { type, row, objects: [], obstacles: [], speed: 0, seed: laneSeed };
+    const r = () => { let x = Math.sin(row * 13 + (++laneSeed) * 7) * 10000; return x - Math.floor(x); };
+
+    if (type === 'grass') {
+      // Ground
+      const grassColor = GRASS_COLORS[Math.floor(r() * GRASS_COLORS.length)];
+      const ground = createGround(grassColor, row);
+      laneData.ground = ground;
+
+      // Trees (obstacles)
+      const numTrees = Math.floor(r() * 3); // 0-2 trees
+      const treePositions = [];
+      for (let t = 0; t < numTrees; t++) {
+        const col = Math.floor(r() * 9) - 4;
+        if (treePositions.indexOf(col) === -1 && !(row === 0 && col === 0)) {
+          treePositions.push(col);
+          const tree = createTree(col, row, r);
+          laneData.obstacles.push({ col, mesh: tree });
+        }
+      }
+    }
+    else if (type === 'road') {
+      const ground = createGround(0x333333, row);
+      laneData.ground = ground;
+
+      // Road lines
+      const lineGeo = new THREE.PlaneGeometry(8, 0.05);
+      const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4 });
+      for (let i = -4; i < 4; i++) {
+        const line = new THREE.Mesh(lineGeo, lineMat);
+        line.rotation.x = -Math.PI / 2;
+        line.position.set(0, 0.01, row + i * 0.25 + 0.125);
+        // skip for simplicity, just add dashed center
+      }
+
+      // Cars
+      const speed = (0.8 + r() * 1.5) * (r() > 0.5 ? 1 : -1);
+      laneData.speed = speed;
+      const numCars = 2 + Math.floor(r() * 2);
+      const spacing = 3 + r() * 2;
+
+      for (let i = 0; i < numCars; i++) {
+        const startCol = -6 + i * spacing + r() * 1.5;
+        const carColor = CAR_COLORS[Math.floor(r() * CAR_COLORS.length)];
+        const carType = r() > 0.6 ? 'truck' : 'car';
+        const car = createCar(startCol, row, carColor, carType, r);
+        laneData.objects.push({ mesh: car, offset: startCol, type: carType });
+      }
+    }
+    else if (type === 'river') {
+      const ground = createGround(WATER_COLOR, row, true);
+      laneData.ground = ground;
+
+      // Logs
+      const speed = (0.5 + r() * 1.0) * (r() > 0.5 ? 1 : -1);
+      laneData.speed = speed;
+      const numLogs = 2 + Math.floor(r() * 2);
+      const logLen = 2 + Math.floor(r() * 2);
+      const spacing = 3.5 + r() * 2;
+
+      for (let i = 0; i < numLogs; i++) {
+        const startCol = -6 + i * spacing;
+        const log = createLog(startCol, row, logLen);
+        laneData.objects.push({ mesh: log, offset: startCol, length: logLen });
+      }
+    }
+    else if (type === 'rail') {
+      const ground = createGround(RAIL_COLOR, row);
+      laneData.ground = ground;
+
+      // Rails
+      const railGeo = new THREE.BoxGeometry(16, 0.04, 0.06);
+      const railMat = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
+      const rail1 = new THREE.Mesh(railGeo, railMat);
+      rail1.position.set(0, 0.02, row + 0.15);
+      scene.add(rail1);
+      laneData.extras = [rail1];
+      const rail2 = new THREE.Mesh(railGeo, railMat);
+      rail2.position.set(0, 0.02, row - 0.15);
+      scene.add(rail2);
+      laneData.extras.push(rail2);
+
+      // Ties
+      const tieGeo = new THREE.BoxGeometry(0.15, 0.04, 0.6);
+      const tieMat = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+      for (let t = -7; t <= 7; t += 0.5) {
+        const tie = new THREE.Mesh(tieGeo, tieMat);
+        tie.position.set(t, 0.01, row);
+        scene.add(tie);
+        laneData.extras.push(tie);
+      }
+
+      // Train
+      const speed = (2.5 + r() * 2) * (r() > 0.5 ? 1 : -1);
+      laneData.speed = speed;
+      laneData.trainTimer = r() * 8;
+      laneData.trainActive = false;
+      laneData.trainWarning = false;
+
+      const train = createTrain(row, speed > 0 ? 1 : -1);
+      train.visible = false;
+      laneData.objects.push({ mesh: train, type: 'train' });
+    }
+
+    lanes[row] = laneData;
+    laneRows.push(row);
+  }
+
+  maxRowGenerated = Math.max(maxRowGenerated, toRow);
+}
+
+function createGround(color, row, isWater = false) {
+  const geo = new THREE.PlaneGeometry(16, 1);
+  const mat = new THREE.MeshLambertMaterial({ color });
+  if (isWater) {
+    mat.transparent = true;
+    mat.opacity = 0.85;
+  }
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(0, isWater ? -0.01 : 0, row);
+  mesh.receiveShadow = !isWater;
+  scene.add(mesh);
+  return mesh;
+}
+
+function createTree(col, row, r) {
+  const group = new THREE.Group();
+
+  // Trunk
+  const trunkGeo = new THREE.BoxGeometry(0.2, 0.6, 0.2);
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+  const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+  trunk.position.y = 0.3;
+  trunk.castShadow = true;
+  group.add(trunk);
+
+  // Canopy
+  const size = 0.5 + r() * 0.4;
+  const canopyGeo = new THREE.BoxGeometry(size, size, size);
+  const canopyColor = [0x27ae60, 0x2ecc71, 0x1e8449][Math.floor(r() * 3)];
+  const canopyMat = new THREE.MeshLambertMaterial({ color: canopyColor });
+  const canopy = new THREE.Mesh(canopyGeo, canopyMat);
+  canopy.position.y = 0.6 + size / 2;
+  canopy.castShadow = true;
+  group.add(canopy);
+
+  group.position.set(col, 0, row);
+  scene.add(group);
+  return group;
+}
+
+function createCar(col, row, color, type, r) {
+  const group = new THREE.Group();
+
+  if (type === 'truck') {
+    const bodyGeo = new THREE.BoxGeometry(1.8, 0.6, 0.7);
+    const bodyMat = new THREE.MeshLambertMaterial({ color });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.4;
+    body.castShadow = true;
+    group.add(body);
+
+    const cabGeo = new THREE.BoxGeometry(0.5, 0.4, 0.65);
+    const cabMat = new THREE.MeshLambertMaterial({ color: darkenColor(color, 0.7) });
+    const cab = new THREE.Mesh(cabGeo, cabMat);
+    cab.position.set(-0.65, 0.7, 0);
+    cab.castShadow = true;
+    group.add(cab);
+  } else {
+    const bodyGeo = new THREE.BoxGeometry(1.2, 0.4, 0.65);
+    const bodyMat = new THREE.MeshLambertMaterial({ color });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.35;
+    body.castShadow = true;
+    group.add(body);
+
+    const topGeo = new THREE.BoxGeometry(0.6, 0.3, 0.55);
+    const topMat = new THREE.MeshLambertMaterial({ color: darkenColor(color, 0.8) });
+    const top = new THREE.Mesh(topGeo, topMat);
+    top.position.set(-0.1, 0.6, 0);
+    top.castShadow = true;
+    group.add(top);
+  }
+
+  // Wheels
+  const wheelGeo = new THREE.BoxGeometry(0.15, 0.15, 0.75);
+  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x222222 });
+  const wl = new THREE.Mesh(wheelGeo, wheelMat);
+  wl.position.set(type === 'truck' ? 0.5 : 0.35, 0.12, 0);
+  group.add(wl);
+  const wr = new THREE.Mesh(wheelGeo, wheelMat);
+  wr.position.set(type === 'truck' ? -0.5 : -0.35, 0.12, 0);
+  group.add(wr);
+
+  group.position.set(col, 0, row);
+  scene.add(group);
+  return group;
+}
+
+function createLog(col, row, length) {
+  const group = new THREE.Group();
+
+  const logGeo = new THREE.BoxGeometry(length, 0.3, 0.7);
+  const logMat = new THREE.MeshLambertMaterial({ color: LOG_COLOR });
+  const log = new THREE.Mesh(logGeo, logMat);
+  log.position.y = 0.05;
+  log.castShadow = true;
+  group.add(log);
+
+  // Bark detail
+  const barkGeo = new THREE.BoxGeometry(length * 0.9, 0.32, 0.5);
+  const barkMat = new THREE.MeshLambertMaterial({ color: darkenColor(LOG_COLOR, 0.85) });
+  const bark = new THREE.Mesh(barkGeo, barkMat);
+  bark.position.y = 0.05;
+  group.add(bark);
+
+  // End caps
+  const capGeo = new THREE.BoxGeometry(0.08, 0.28, 0.65);
+  const capMat = new THREE.MeshLambertMaterial({ color: darkenColor(LOG_COLOR, 0.7) });
+  const capL = new THREE.Mesh(capGeo, capMat);
+  capL.position.set(-length / 2, 0.05, 0);
+  group.add(capL);
+  const capR = new THREE.Mesh(capGeo, capMat);
+  capR.position.set(length / 2, 0.05, 0);
+  group.add(capR);
+
+  group.position.set(col, 0, row);
+  scene.add(group);
+  return group;
+}
+
+function createTrain(row, dir) {
+  const group = new THREE.Group();
+
+  // Engine
+  const engineGeo = new THREE.BoxGeometry(2.5, 1.0, 0.8);
+  const engineMat = new THREE.MeshLambertMaterial({ color: TRAIN_COLOR });
+  const engine = new THREE.Mesh(engineGeo, engineMat);
+  engine.position.y = 0.6;
+  engine.castShadow = true;
+  group.add(engine);
+
+  // Cabin
+  const cabGeo = new THREE.BoxGeometry(1.0, 0.6, 0.75);
+  const cabMat = new THREE.MeshLambertMaterial({ color: darkenColor(TRAIN_COLOR, 0.7) });
+  const cab = new THREE.Mesh(cabGeo, cabMat);
+  cab.position.set(dir > 0 ? -0.5 : 0.5, 1.2, 0);
+  group.add(cab);
+
+  // Cars
+  for (let i = 1; i <= 3; i++) {
+    const carGeo = new THREE.BoxGeometry(2.0, 0.7, 0.75);
+    const carColor = [0xe74c3c, 0x3498db, 0x2ecc71][i - 1];
+    const carMat = new THREE.MeshLambertMaterial({ color: carColor });
+    const carMesh = new THREE.Mesh(carGeo, carMat);
+    carMesh.position.set(dir > 0 ? -i * 2.3 : i * 2.3, 0.5, 0);
+    carMesh.castShadow = true;
+    group.add(carMesh);
+  }
+
+  group.position.set(dir > 0 ? -20 : 20, 0, row);
+  scene.add(group);
+  return group;
+}
+
+function darkenColor(color, factor) {
+  const r = ((color >> 16) & 255) * factor;
+  const g = ((color >> 8) & 255) * factor;
+  const b = (color & 255) * factor;
+  return (Math.floor(r) << 16) | (Math.floor(g) << 8) | Math.floor(b);
+}
+
+// ============ GAME LOGIC ============
+function startGame() {
+  gameState = 'playing';
+  score = 0;
+  playerRow = 0;
+  playerCol = 0;
+  playerTargetRow = 0;
+  playerTargetCol = 0;
+  playerOnLog = null;
+  playerLogSpeed = 0;
+  idleTimer = 0;
+  lastMoveTime = performance.now();
+  eagleApproaching = false;
+  deathType = null;
+
+  // Remove old lanes
+  for (const row of laneRows) {
+    removeLane(row);
+  }
+  lanes = {};
+  laneRows = [];
+  maxRowGenerated = -1;
+  furthestRow = 0;
+
+  // Remove eagle
+  if (eagle) {
+    scene.remove(eagle);
+    eagle = null;
+  }
+
+  // Generate new lanes
+  generateLanes(-2, 20);
+
+  // Reset player position
+  player.position.set(0, 0, 0);
+  player.visible = true;
+
+  // Update UI
+  updateScore();
+  document.getElementById('overlay').classList.add('hidden');
+}
+
+function removeLane(row) {
+  const lane = lanes[row];
+  if (!lane) return;
+
+  if (lane.ground) scene.remove(lane.ground);
+  if (lane.extras) lane.extras.forEach(e => scene.remove(e));
+  lane.objects.forEach(o => scene.remove(o.mesh));
+  lane.obstacles.forEach(o => scene.remove(o.mesh));
+}
+
+function movePlayer(dx, dz) {
+  if (gameState !== 'playing') return;
+  if (hopAnim) return; // Already hopping
+
+  const newCol = playerCol + dx;
+  const newRow = playerRow + dz;
+
+  // Can't move behind start
+  if (newRow < 0) return;
+
+  // Check bounds (sides)
+  if (newCol < -4 || newCol > 4) return;
+
+  // Check tree collision
+  const targetLane = lanes[newRow];
+  if (targetLane && targetLane.obstacles) {
+    for (const obs of targetLane.obstacles) {
+      if (obs.col === newCol) return; // Blocked by tree
+    }
+  }
+
+  // Start hop
+  playerCol = newCol;
+  playerRow = newRow;
+  playerTargetCol = newCol;
+  playerTargetRow = newRow;
+
+  hopAnim = {
+    startX: player.position.x,
+    startZ: player.position.z,
+    endX: newCol,
+    endZ: newRow,
+    startTime: performance.now(),
+    duration: HOP_DURATION
+  };
+
+  // Update score
+  if (playerRow > furthestRow) {
+    furthestRow = playerRow;
+    score = furthestRow;
+    updateScore();
+  }
+
+  lastMoveTime = performance.now();
+  idleTimer = 0;
+  eagleApproaching = false;
+  if (eagle) {
+    scene.remove(eagle);
+    eagle = null;
+  }
+
+  // Generate more lanes ahead
+  if (playerRow + 15 > maxRowGenerated) {
+    generateLanes(maxRowGenerated + 1, maxRowGenerated + 15);
+  }
+
+  // Clean up old lanes behind
+  const minRow = playerRow - 8;
+  for (const row of [...laneRows]) {
+    if (row < minRow && row !== playerRow) {
+      removeLane(row);
+      delete lanes[row];
+      laneRows = laneRows.filter(r => r !== row);
+    }
+  }
+}
+
+function updateScore() {
+  document.getElementById('score').textContent = score;
+}
+
+function updateHighScoreDisplay() {
+  const el = document.getElementById('highscore');
+  if (highScore > 0) {
+    el.textContent = `🏆 Best: ${highScore}`;
+  }
+}
+
+function die(type) {
+  if (gameState === 'dead') return;
+  gameState = 'dead';
+  deathType = type;
+  deathTimer = 0;
+
+  if (score > highScore) {
+    highScore = score;
+    localStorage.setItem('crossyHigh', highScore.toString());
+    updateHighScoreDisplay();
+  }
+
+  // Show overlay after brief delay
+  setTimeout(() => {
+    const overlay = document.getElementById('overlay');
+    overlay.querySelector('h1').textContent = 'GAME OVER';
+    overlay.querySelector('h2').textContent = `Score: ${score}`;
+    overlay.querySelector('.start-btn').textContent = '↻ RETRY';
+    overlay.classList.remove('hidden');
+  }, 800);
+}
+
+// ============ INPUT ============
+function onKeyDown(e) {
+  if (gameState === 'menu' || (gameState === 'dead' && deathTimer > 5)) {
+    if (e.key === ' ' || e.key === 'Enter') {
+      startGame();
+      return;
+    }
+  }
+
+  switch (e.key) {
+    case 'ArrowUp': case 'w': case 'W': movePlayer(0, 1); break;
+    case 'ArrowDown': case 's': case 'S': movePlayer(0, -1); break;
+    case 'ArrowLeft': case 'a': case 'A': movePlayer(1, 0); break;
+    case 'ArrowRight': case 'd': case 'D': movePlayer(-1, 0); break;
+  }
+}
+
+let touchStartX = 0, touchStartY = 0;
+function onTouchStart(e) {
+  if (gameState !== 'playing') return;
+  // Only handle direct touches on canvas, not UI
+  if (e.target !== renderer.domElement) return;
+  const touch = e.touches[0];
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+}
+
+function handleMove(dir) {
+  if (gameState !== 'playing') return;
+  switch (dir) {
+    case 'up': movePlayer(0, 1); break;
+    case 'down': movePlayer(0, -1); break;
+    case 'left': movePlayer(1, 0); break;
+    case 'right': movePlayer(-1, 0); break;
+  }
+}
+
+// ============ ANIMATION LOOP ============
+let lastTime = 0;
+function animate(time = 0) {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min((time - lastTime) / 1000, 0.05);
+  lastTime = time;
+
+  if (gameState === 'playing' || gameState === 'dead') {
+    updateLanes(dt);
+    updatePlayer(dt);
+    updateCamera(dt);
+    updateIdle(dt);
+    checkCollisions();
+  }
+
+  renderer.render(scene, camera);
+}
+
+function updateLanes(dt) {
+  for (const row of laneRows) {
+    const lane = lanes[row];
+    if (!lane) continue;
+
+    if (lane.type === 'road') {
+      for (const obj of lane.objects) {
+        obj.mesh.position.x += lane.speed * dt;
+        // Wrap around
+        if (lane.speed > 0 && obj.mesh.position.x > 10) {
+          obj.mesh.position.x = -10;
+        } else if (lane.speed < 0 && obj.mesh.position.x < -10) {
+          obj.mesh.position.x = 10;
+        }
+      }
+    }
+    else if (lane.type === 'river') {
+      for (const obj of lane.objects) {
+        obj.mesh.position.x += lane.speed * dt;
+        if (lane.speed > 0 && obj.mesh.position.x > 12) {
+          obj.mesh.position.x = -12;
+        } else if (lane.speed < 0 && obj.mesh.position.x < -12) {
+          obj.mesh.position.x = 12;
+        }
+      }
+    }
+    else if (lane.type === 'rail') {
+      // Train timing
+      lane.trainTimer += dt;
+      const cycleDuration = 6 + Math.abs(lane.speed) * 0.5;
+      const cyclePos = lane.trainTimer % cycleDuration;
+      const trainEnterTime = 1.5;
+      const warningTime = 2.0;
+
+      if (cyclePos > cycleDuration - trainEnterTime) {
+        // Train is passing
+        if (!lane.trainActive) {
+          lane.trainActive = true;
+          lane.objects[0].mesh.visible = true;
+        }
+        const progress = (cyclePos - (cycleDuration - trainEnterTime)) / trainEnterTime;
+        const dir = lane.speed > 0 ? 1 : -1;
+        const trainX = dir > 0 ? -20 + progress * 40 : 20 - progress * 40;
+        lane.objects[0].mesh.position.x = trainX;
+      } else {
+        lane.trainActive = false;
+        lane.objects[0].mesh.visible = false;
+      }
+
+      // Warning light
+      if (cyclePos > cycleDuration - warningTime && !lane.trainActive) {
+        lane.trainWarning = true;
+      } else {
+        lane.trainWarning = false;
+      }
+    }
+  }
+}
+
+function updatePlayer(dt) {
+  if (hopAnim) {
+    const elapsed = performance.now() - hopAnim.startTime;
+    const t = Math.min(elapsed / hopAnim.duration, 1);
+
+    // Smooth easing
+    const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+    player.position.x = hopAnim.startX + (hopAnim.endX - hopAnim.startX) * ease;
+    player.position.z = hopAnim.startZ + (hopAnim.endZ - hopAnim.startZ) * ease;
+
+    // Hop height (parabolic)
+    const hopHeight = 0.4;
+    player.position.y = hopHeight * Math.sin(t * Math.PI);
+
+    // Squash and stretch
+    const squash = 1 + 0.2 * Math.sin(t * Math.PI);
+    const stretch = 1 / squash;
+    player.scale.set(stretch, squash, stretch);
+
+    if (t >= 1) {
+      player.position.set(hopAnim.endX, 0, hopAnim.endZ);
+      player.scale.set(1, 1, 1);
+      hopAnim = null;
+    }
+  } else if (gameState === 'playing') {
+    // Log riding
+    const currentLane = lanes[playerRow];
+    if (currentLane && currentLane.type === 'river') {
+      playerOnLog = null;
+      for (const obj of currentLane.objects) {
+        const logX = obj.mesh.position.x;
+        const logLen = obj.length || 2;
+        if (playerCol >= logX - logLen / 2 - 0.3 && playerCol <= logX + logLen / 2 + 0.3) {
+          playerOnLog = obj;
+          playerLogSpeed = currentLane.speed;
+          break;
+        }
+      }
+
+      if (playerOnLog) {
+        player.position.x += playerLogSpeed * dt;
+        playerCol = player.position.x;
+
+        // Fell off screen
+        if (playerCol < -5 || playerCol > 5) {
+          die('water');
+        }
+      } else {
+        // In water without log
+        die('water');
+      }
+    } else {
+      playerOnLog = null;
+    }
+
+    // Death animation
+    if (gameState === 'dead') {
+      deathTimer += dt;
+    }
+  }
+
+  // Death animations
+  if (gameState === 'dead') {
+    deathTimer += dt;
+    if (deathType === 'water') {
+      player.position.y -= dt * 2;
+      player.rotation.x += dt * 5;
+    } else if (deathType === 'car' || deathType === 'train') {
+      player.scale.y *= 0.95;
+      player.scale.x *= 1.02;
+      player.scale.z *= 1.02;
+    }
+  }
+}
+
+function updateCamera(dt) {
+  const targetX = playerCol * 0.3;
+  const targetZ = playerRow + 4;
+  const targetY = 8;
+
+  cameraTarget.set(targetX, 0, targetZ);
+  cameraPos.set(targetX, targetY, playerRow - 6);
+
+  camera.position.lerp(cameraPos, dt * 3);
+  const lookTarget = new THREE.Vector3().copy(cameraTarget);
+  camera.lookAt(lookTarget);
+}
+
+function updateIdle(dt) {
+  if (gameState !== 'playing') return;
+
+  const timeSinceMove = performance.now() - lastMoveTime;
+  if (timeSinceMove > IDLE_DEATH_TIME) {
+    die('idle');
+  } else if (timeSinceMove > IDLE_DEATH_TIME - 2000) {
+    // Eagle approaching
+    if (!eagleApproaching) {
+      eagleApproaching = true;
+      const eagleGeo = new THREE.BoxGeometry(0.8, 0.4, 0.8);
+      const eagleMat = new THREE.MeshLambertMaterial({ color: 0x444444 });
+      eagle = new THREE.Group();
+
+      const body = new THREE.Mesh(eagleGeo, eagleMat);
+      body.position.y = 8;
+      eagle.add(body);
+
+      // Wings
+      const wingGeo = new THREE.BoxGeometry(2, 0.1, 0.5);
+      const wingMat = new THREE.MeshLambertMaterial({ color: 0x555555 });
+      const leftWing = new THREE.Mesh(wingGeo, wingMat);
+      leftWing.position.set(-1, 8, 0);
+      eagle.add(leftWing);
+      const rightWing = new THREE.Mesh(wingGeo, wingMat);
+      rightWing.position.set(1, 8, 0);
+      eagle.add(rightWing);
+
+      scene.add(eagle);
+    }
+
+    if (eagle) {
+      const progress = (timeSinceMove - (IDLE_DEATH_TIME - 2000)) / 2000;
+      eagle.position.set(playerCol, 8 - progress * 7, playerRow);
+      // Wing flap
+      eagle.children[1].rotation.z = Math.sin(timeSinceMove * 0.01) * 0.5;
+      eagle.children[2].rotation.z = -Math.sin(timeSinceMove * 0.01) * 0.5;
+    }
+  }
+}
+
+function checkCollisions() {
+  if (gameState !== 'playing') return;
+  if (hopAnim) return; // Don't check during hop
+
+  const currentLane = lanes[playerRow];
+  if (!currentLane) return;
+
+  // Road collision
+  if (currentLane.type === 'road') {
+    for (const obj of currentLane.objects) {
+      const carX = obj.mesh.position.x;
+      const halfWidth = obj.type === 'truck' ? 0.9 : 0.6;
+      if (playerCol >= carX - halfWidth - 0.2 && playerCol <= carX + halfWidth + 0.2) {
+        die('car');
+        return;
+      }
+    }
+  }
+
+  // Rail collision
+  if (currentLane.type === 'rail' && currentLane.trainActive) {
+    const trainX = currentLane.objects[0].mesh.position.x;
+    if (Math.abs(playerCol - trainX) < 5) {
+      die('train');
+      return;
+    }
+  }
+
+  // River - check if on log (handled in updatePlayer)
+  // Water death is handled in updatePlayer when no log found
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ============ START ============
+init();
+</script>
+</body>
+</html>
