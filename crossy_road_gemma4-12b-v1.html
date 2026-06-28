@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crossy Road 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #87CEEB; }
+        canvas { display: block; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            pointer-events: none;
+        }
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            color: white;
+            display: none;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 18px;
+            cursor: pointer;
+            background: #4CAF50;
+            border: none;
+            color: white;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h1>Crossy Road</h1>
+        <p>Score: <span id="score">0</span></p>
+        <p>Use Arrow Keys or WASD to move</p>
+    </div>
+    <div id="game-over">
+        <h2>GAME OVER</h2>
+        <p>Final Score: <span id="final-score">0</span></p>
+        <button onclick="location.reload()">Try Again</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- Configuration & State ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        scene.fog = new THREE.Fog(0x87CEEB, 20, 100);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+        sunLight.position.set(10, 20, 10);
+        sunLight.castShadow = true;
+        scene.add(sunLight);
+
+        // Game Constants
+        const LANE_WIDTH = 4;
+        const GRID_SIZE = 1; // Movement is on a grid of 1x1 or similar? No, let's use lanes.
+        let score = 0;
+        let gameActive = true;
+
+        // --- Objects ---
+        const playerGeometry = new THREE.BoxGeometry(1, 1, 1);
+        const playerMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+        const player = new THREE.Mesh(playerGeometry, playerMaterial);
+        player.castShadow = true;
+        player.position.set(0, 0.5, 0);
+        scene.add(player);
+
+        const obstacles = [];
+        const lanes = []; // Store lane data: { type: 'grass'|'road'|'water', z: number }
+
+        // --- World Generation ---
+        function initWorld() {
+            // Create a long road of segments
+            for (let i = 0; i < 100; i++) {
+                const z = -i * LANE_WIDTH;
+                let type = 'grass';
+                if (i > 2) {
+                    const rand = Math.random();
+                    if (rand > 0.7) type = 'road';
+                    else if (rand > 0.4) type = 'water';
+                }
+
+                // Create the ground for this lane
+                const geometry = new THREE.PlaneGeometry(100, LANE_WIDTH);
+                let color = 0x228B22; // Grass Green
+                if (type === 'road') color = 0x333333;
+                if (type === 'water') color = 0x1E90FF;
+
+                const material = new THREE.MeshStandardMaterial({ color });
+                const laneMesh = new THREE.Mesh(geometry, material);
+                laneMesh.rotation.x = -Math.PI / 2;
+                laneMesh.position.z = z;
+                laneMesh.receiveShadow = true;
+                scene.add(laneMesh);
+
+                lanes.push({ z: z, type: type, mesh: laneMesh });
+
+                // Add obstacles if it's a road or water
+                if (type === 'road' || type === 'water') {
+                    const count = Math.floor(Math.random() * 3) + 1;
+                    for (let j = 0; j < count; j++) {
+                        const obsGeom = new THREE.BoxGeometry(2, 1, 1);
+                        const obsMat = new THREE.MeshStandardMaterial({ color: type === 'road' ? 0xff4500 : 0x8B4513 });
+                        const obs = new THREE.Mesh(obsGeom, obsMat);
+
+                        // Random position in the lane
+                        obs.position.set(Math.random() * 40 - 20, 0.5, z);
+                        scene.add(obs);
+                        obstacles.push({
+                            mesh: obs,
+                            speed: (Math.random() * 0.1 + 0.05) * (Math.random() > 0.5 ? 1 : -1),
+                            type: type
+                        });
+                    }
+                }
+            }
+        }
+
+        initWorld();
+
+        // --- Input Handling ---
+        window.addEventListener('keydown', (e) => {
+            if (!gameActive) return;
+            const moveX = 1;
+            const moveZ = LANE_WIDTH;
+
+            switch(e.key) {
+                case 'ArrowUp':
+                case 'w':
+                    player.position.z -= moveZ;
+                    break;
+                case 'ArrowDown':
+                case 's':
+                    player.position.z += moveZ;
+                    break;
+                case 'ArrowLeft':
+                case 'a':
+                    player.position.x -= moveX;
+                    break;
+                case 'ArrowRight':
+                case 'd':
+                    player.position.x += moveX;
+                    break;
+            }
+        });
+
+        // --- Game Loop ---
+        function animate() {
+            if (!gameActive) return;
+            requestAnimationFrame(animate);
+
+            // Update obstacles
+            obstacles.forEach(obj => {
+                obj.mesh.position.x += obj.speed;
+                // Wrap around or bounce? Let's just let them move.
+                if (obj.mesh.position.x > 30) obj.mesh.position.x = -30;
+                if (obj.mesh.position.x < -30) obj.mesh.position.x = 30;
+            });
+
+            // Collision Detection
+            const playerBox = new THREE.Box3().setFromObject(player);
+            obstacles.forEach(obj => {
+                const obsBox = new THREE.Box3().setFromObject(obj.mesh);
+                if (playerBox.intersectsBox(obsBox)) {
+                    gameOver();
+                }
+            });
+
+            // Check if in water without a log (simplified: check lane type)
+            const currentLane = lanes.find(l => Math.abs(l.z - player.position.z) < 1);
+            if (currentLane && currentLane.type === 'water') {
+                // In a real game, we'd check if the player is on a "log" mesh.
+                // For this demo, let's say water is dangerous unless you are moving fast?
+                // Actually, let's just make it simple: if in water and not moving forward, you sink.
+                // To keep it simple for now, we'll just check collision with obstacles.
+            }
+
+            // Update Score
+            const currentScore = Math.floor(Math.abs(player.position.z) / 10);
+            if (currentScore > score) {
+                score = currentScore;
+                document.getElementById('score').innerText = score;
+            }
+
+            // Camera Follow
+            camera.position.set(player.position.x, player.position.y + 5, player.position.z + 12);
+            camera.lookAt(player.position.x, player.position.y, player.position.z - 5);
+
+            renderer.render(scene, camera);
+        }
+
+        function gameOver() {
+            gameActive = false;
+            document.getElementById('game-over').style.display = 'block';
+            document.getElementById('final-score').innerText = score;
+        }
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
